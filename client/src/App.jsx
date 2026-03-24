@@ -5,6 +5,7 @@ function App() {
 
   const pcRef = useRef(null);
   const streamRef = useRef(null);
+  const dcRef = useRef(null);
 
   async function startSession() {
     setStarted(true);
@@ -15,9 +16,113 @@ function App() {
     const pc = new RTCPeerConnection();
     pcRef.current = pc;
 
- 
+    /* =========================
+       DATA CHANNEL (TOOLS)
+    ========================= */
 
-    /* MIC STREAM */
+    const dc = pc.createDataChannel("oai-events");
+    dcRef.current = dc;
+
+    dc.onopen = () => {
+      console.log("DATA CHANNEL OPEN");
+
+        const hour = new Date().getHours();
+
+      const greeting =
+        hour < 12 ? "Good morning" :
+        hour < 18 ? "Good afternoon" :
+        "Good evening";
+
+      dc.send(JSON.stringify({
+        type: "response.create",
+        response: {
+          instructions:
+            `${greeting}, you've reached John’s Big Honker’s Garage. How can I help today?`
+        }
+      }));
+    };
+
+    dc.onmessage = async (event) => {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type !== "response.function_call_arguments.done") return;
+
+      const args = JSON.parse(msg.arguments);
+
+      /* =========================
+         CHECK AVAILABILITY
+      ========================= */
+
+      if (msg.name === "check_availability") {
+
+        const res = await fetch("http://localhost:3001/tool/check_availability", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(args)
+        });
+
+        const data = await res.json();
+
+        dc.send(JSON.stringify({
+          type: "response.function_call_output",
+          call_id: msg.call_id,
+          output: JSON.stringify(data)
+        }));
+
+        dc.send(JSON.stringify({ type: "response.create" }));
+
+        return;
+      }
+
+      /* =========================
+         CREATE BOOKING (FIXED)
+      ========================= */
+
+      if (msg.name === "create_booking") {
+
+        console.log("CREATE BOOKING TRIGGERED");
+
+        const res = await fetch("http://localhost:3001/tool/create_booking", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(args)
+        });
+
+        const data = await res.json();
+
+        /* SEND TOOL RESULT BACK */
+        dc.send(JSON.stringify({
+          type: "response.function_call_output",
+          call_id: msg.call_id,
+          output: JSON.stringify(data)
+        }));
+
+        /* 🔥 FORCE CORRECT RESPONSE */
+
+        if (data.success) {
+          dc.send(JSON.stringify({
+            type: "response.create",
+            response: {
+              instructions: "Confirm the booking politely."
+            }
+          }));
+        } else {
+          dc.send(JSON.stringify({
+            type: "response.create",
+            response: {
+              instructions: `Do NOT confirm the booking. Tell the caller: ${data.message}`
+            }
+          }));
+        }
+
+        return;
+      }
+    };
+
+    /* =========================
+       MIC STREAM
+    ========================= */
+
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     streamRef.current = stream;
 
@@ -26,7 +131,7 @@ function App() {
     const audioEl = document.createElement("audio");
     audioEl.autoplay = true;
 
-    pc.ontrack = e => (audioEl.srcObject = e.streams[0]);
+    pc.ontrack = (e) => (audioEl.srcObject = e.streams[0]);
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
