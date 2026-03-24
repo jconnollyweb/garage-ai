@@ -5,118 +5,36 @@ function App() {
 
   const pcRef = useRef(null);
   const streamRef = useRef(null);
-  const dcRef = useRef(null);
 
   async function startSession() {
     setStarted(true);
 
-    const tokenResponse = await fetch("http://localhost:3001/session");
+    const incomingNumber = "+441234560001";
+
+    const tokenResponse = await fetch(
+      `http://localhost:3001/session?number=${encodeURIComponent(incomingNumber)}`
+    );
+
     const sessionData = await tokenResponse.json();
+
+    console.log("SESSION DATA:", sessionData);
 
     const pc = new RTCPeerConnection();
     pcRef.current = pc;
 
     /* =========================
-       DATA CHANNEL (TOOLS)
+       DATA CHANNEL
     ========================= */
 
     const dc = pc.createDataChannel("oai-events");
-    dcRef.current = dc;
 
-    dc.onopen = () => {
+   dc.onopen = () => {
       console.log("DATA CHANNEL OPEN");
 
-        const hour = new Date().getHours();
-
-      const greeting =
-        hour < 12 ? "Good morning" :
-        hour < 18 ? "Good afternoon" :
-        "Good evening";
-
+      /* 🔥 FORCE FIRST RESPONSE */
       dc.send(JSON.stringify({
-        type: "response.create",
-        response: {
-          instructions:
-            `${greeting}, you've reached John’s Big Honker’s Garage. How can I help today?`
-        }
+        type: "response.create"
       }));
-    };
-
-    dc.onmessage = async (event) => {
-      const msg = JSON.parse(event.data);
-
-      if (msg.type !== "response.function_call_arguments.done") return;
-
-      const args = JSON.parse(msg.arguments);
-
-      /* =========================
-         CHECK AVAILABILITY
-      ========================= */
-
-      if (msg.name === "check_availability") {
-
-        const res = await fetch("http://localhost:3001/tool/check_availability", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(args)
-        });
-
-        const data = await res.json();
-
-        dc.send(JSON.stringify({
-          type: "response.function_call_output",
-          call_id: msg.call_id,
-          output: JSON.stringify(data)
-        }));
-
-        dc.send(JSON.stringify({ type: "response.create" }));
-
-        return;
-      }
-
-      /* =========================
-         CREATE BOOKING (FIXED)
-      ========================= */
-
-      if (msg.name === "create_booking") {
-
-        console.log("CREATE BOOKING TRIGGERED");
-
-        const res = await fetch("http://localhost:3001/tool/create_booking", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(args)
-        });
-
-        const data = await res.json();
-
-        /* SEND TOOL RESULT BACK */
-        dc.send(JSON.stringify({
-          type: "response.function_call_output",
-          call_id: msg.call_id,
-          output: JSON.stringify(data)
-        }));
-
-        /* 🔥 FORCE CORRECT RESPONSE */
-
-        if (data.success) {
-          dc.send(JSON.stringify({
-            type: "response.create",
-            response: {
-              instructions: "Confirm the booking politely."
-            }
-          }));
-        } else {
-          dc.send(JSON.stringify({
-            type: "response.create",
-            response: {
-              instructions: `Do NOT confirm the booking. Tell the caller: ${data.message}`
-            }
-          }));
-        }
-
-        return;
-      }
     };
 
     /* =========================
@@ -136,16 +54,17 @@ function App() {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    const baseUrl = "https://api.openai.com/v1/realtime?model=gpt-realtime-mini";
-
-    const sdpResponse = await fetch(baseUrl, {
-      method: "POST",
-      body: offer.sdp,
-      headers: {
-        Authorization: `Bearer ${sessionData.client_secret.value}`,
-        "Content-Type": "application/sdp",
-      },
-    });
+    const sdpResponse = await fetch(
+      "https://api.openai.com/v1/realtime?model=gpt-realtime-mini",
+      {
+        method: "POST",
+        body: offer.sdp,
+        headers: {
+          Authorization: `Bearer ${sessionData.client_secret.value}`,
+          "Content-Type": "application/sdp",
+        },
+      }
+    );
 
     const answer = {
       type: "answer",
