@@ -2,9 +2,6 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
-import { getQuestions } from "./questionService.js";
-import { getPhoneContext } from "./phoneRouter.js";
-import { getKnowledge } from "./knowledgeService.js";
 
 dotenv.config();
 
@@ -29,86 +26,132 @@ app.get("/session", async (req, res) => {
 
     console.log("Incoming number:", incomingNumber);
 
-    const context = getPhoneContext(incomingNumber);
+    /* =========================
+       1. GET RUNTIME CONFIG
+    ========================= */
+    const configRes = await fetch(
+      `http://127.0.0.1:8000/api/internal/runtime/voice-config?phone_number=${encodeURIComponent(incomingNumber)}`,
+      {
+        headers: {
+          "X-Internal-Api-Key": process.env.INTERNAL_API_KEY,
+          "Accept": "application/json",
+        },
+      }
+    );
 
-    if (!context) {
+    if (!configRes.ok) throw new Error("Voice config failed");
+
+    const config = await configRes.json();
+    console.log("VOICE CONFIG:", config);
+
+    if (!config.tenant_id) {
       return res.status(400).json({
-        error: "Unknown phone number",
+        error: "Phone number not found",
       });
     }
 
     /* =========================
-       FETCH KNOWLEDGE
+       2. GET KNOWLEDGE BASE
     ========================= */
-    const knowledgeText = await getKnowledge(
-      context.tenant_id,
-      context.phone_number_id
+    const knowledgeRes = await fetch(
+      `http://127.0.0.1:8000/api/internal/knowledge-base?tenant_id=${config.tenant_id}&phone_number_id=${config.phone_number_id}`,
+      {
+        headers: {
+          "X-Internal-Api-Key": process.env.INTERNAL_API_KEY,
+          "Accept": "application/json",
+        },
+      }
     );
 
-    console.log("Knowledge loaded:\n", knowledgeText);
+    if (!knowledgeRes.ok) throw new Error("Knowledge fetch failed");
 
-    const questions = await getQuestions(
-      context.tenant_id,
-      context.phone_number_id
+    const knowledgeData = await knowledgeRes.json();
+
+    const knowledgeText = (knowledgeData.data || [])
+      .map(item => `${item.title}: ${item.content}`)
+      .join("\n");
+
+    console.log("Knowledge loaded");
+
+    /* =========================
+       3. GET QUESTION BANK
+    ========================= */
+    const questionRes = await fetch(
+      `http://127.0.0.1:8000/api/internal/question-bank?tenant_id=${config.tenant_id}&phone_number_id=${config.phone_number_id}`,
+      {
+        headers: {
+          "X-Internal-Api-Key": process.env.INTERNAL_API_KEY,
+          "Accept": "application/json",
+        },
+      }
     );
+
+    if (!questionRes.ok) throw new Error("Question fetch failed");
+
+    const questionData = await questionRes.json();
+
+    // ✅ SAFE mapping
+    const questions = (questionData.data || []).map(q => q.question_text);
 
     console.log("Questions:", questions);
 
     /* =========================
-       EXTRACT COMPANY (FIXED ORDER)
+       4. EXTRACT COMPANY NAME
     ========================= */
     let companyName = "our service";
 
-    const lines = knowledgeText.split("\n");
-
-    for (const line of lines) {
-      if (line.toLowerCase().includes("company name")) {
-        companyName = line.split(":")[1]?.trim();
-        break;
-      }
+    const match = knowledgeText.match(/Company Name:\s*(.*)/i);
+    if (match && match[1]) {
+      companyName = match[1].trim();
     }
 
-    console.log("Extracted company:", companyName);
+    console.log("Company:", companyName);
+
+    const hour = new Date().getHours();
+
+      let greeting = "Hello";
+
+      if (hour < 12) greeting = "Good morning";
+      else if (hour < 18) greeting = "Good afternoon";
+      else greeting = "Good evening";
 
     /* =========================
-       BUILD INSTRUCTIONS
+       5. BUILD INSTRUCTIONS
     ========================= */
-     const instructions = `
-      You are a professional and friendly assistant.
+    const instructions = `
+     You are a professional and friendly assistant.
 
-      When the call starts, immediately greet the caller by saying:
-      "Good morning, afternoon, or evening depending on time, and say: you've reached ${companyName}. How can I help today?"
+      When the call starts, say:
+      "${greeting}, you've reached ${companyName}. How can I help today?"
 
-      Use the knowledge base below to answer questions.
+---
 
-      KNOWLEDGE BASE:
-      ${knowledgeText}
+KNOWLEDGE BASE:
+${knowledgeText}
 
-      ---
+---
 
-      IMPORTANT TASK:
+IMPORTANT TASK:
 
-      You must collect answers to ALL of the following questions before ending the call:
+Ask ALL of these questions before ending the call:
 
-      ${questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}
+${questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}
 
-      ---
+---
 
-      RULES:
+RULES:
 
-      - Ask ONE question at a time
-      - Wait for the user's response before asking the next
-      - Do NOT skip questions
-      - Do NOT ask multiple questions at once
-      - Keep track of which questions are answered
-      - If user asks something, answer it first using knowledge base, then continue questions
-      - Do NOT end the conversation until ALL questions are answered
-      - After all questions are complete, thank the user and end politely
-      - Keep responses short and natural
-      `;
+- Ask ONE question at a time
+- Wait for response
+- Do NOT skip questions
+- Answer user questions first
+- Then continue questions
+- Do NOT end until done
+- Keep responses short
+`;
 
     /* =========================
-       CREATE SESSION
+       6. CREATE SESSION
     ========================= */
     const response = await fetch(
       "https://api.openai.com/v1/realtime/sessions",
@@ -128,14 +171,13 @@ app.get("/session", async (req, res) => {
 
     const data = await response.json();
 
-    return res.json({
-      ...data,
-      companyName
-    });
+    return res.json(data);
 
   } catch (err) {
-    console.error("SESSION ERROR:", err);
-    return res.status(500).send("Session creation failed");
+    console.error("SESSION ERROR:", err.message);
+    return res.status(500).json({
+      error: "Session creation failed",
+    });
   }
 });
 
