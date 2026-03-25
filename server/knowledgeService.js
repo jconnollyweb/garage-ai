@@ -1,7 +1,7 @@
 import fetch from "node-fetch";
 
 export async function getKnowledge(tenant_id, phone_number_id) {
-  const url = `https://dev.available.titeknit.work/api/internal/knowledge-base?tenant_id=${tenant_id}&phone_number_id=${phone_number_id}`;
+  const url = `http://127.0.0.1:8000/api/internal/knowledge-base?tenant_id=${tenant_id}&phone_number_id=${phone_number_id}`;
 
   /* 🔐 Build Basic Auth header */
   const username = process.env.API_USERNAME;

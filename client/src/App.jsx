@@ -1,5 +1,8 @@
 import { useState, useRef } from "react";
 
+ const ACTIVE_NUMBER = "+441234560001";
+//  const ACTIVE_NUMBER = "+441234560099";
+
 function App() {
   const [started, setStarted] = useState(false);
 
@@ -9,10 +12,8 @@ function App() {
   async function startSession() {
     setStarted(true);
 
-    const incomingNumber = "+441234560001";
-
     const tokenResponse = await fetch(
-      `http://localhost:3001/session?number=${encodeURIComponent(incomingNumber)}`
+      `http://localhost:3001/session?number=${encodeURIComponent(ACTIVE_NUMBER)}`
     );
 
     const sessionData = await tokenResponse.json();
@@ -25,13 +26,11 @@ function App() {
     /* =========================
        DATA CHANNEL
     ========================= */
-
     const dc = pc.createDataChannel("oai-events");
 
-   dc.onopen = () => {
+    dc.onopen = () => {
       console.log("DATA CHANNEL OPEN");
 
-      /* FORCE FIRST RESPONSE */
       dc.send(JSON.stringify({
         type: "response.create"
       }));
@@ -40,7 +39,6 @@ function App() {
     /* =========================
        MIC STREAM
     ========================= */
-
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     streamRef.current = stream;
 
