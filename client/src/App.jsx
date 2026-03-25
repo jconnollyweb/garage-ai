@@ -31,7 +31,7 @@ function App() {
    dc.onopen = () => {
       console.log("DATA CHANNEL OPEN");
 
-      /* 🔥 FORCE FIRST RESPONSE */
+      /* FORCE FIRST RESPONSE */
       dc.send(JSON.stringify({
         type: "response.create"
       }));

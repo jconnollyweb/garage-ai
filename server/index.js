@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
-
+import { getQuestions } from "./questionService.js";
 import { getPhoneContext } from "./phoneRouter.js";
 import { getKnowledge } from "./knowledgeService.js";
 
@@ -47,6 +47,13 @@ app.get("/session", async (req, res) => {
 
     console.log("Knowledge loaded:\n", knowledgeText);
 
+    const questions = await getQuestions(
+      context.tenant_id,
+      context.phone_number_id
+    );
+
+    console.log("Questions:", questions);
+
     /* =========================
        EXTRACT COMPANY (FIXED ORDER)
     ========================= */
@@ -66,22 +73,39 @@ app.get("/session", async (req, res) => {
     /* =========================
        BUILD INSTRUCTIONS
     ========================= */
-    const instructions = `
-You are a professional and friendly assistant.
+     const instructions = `
+      You are a professional and friendly assistant.
 
-When the call starts, immediately greet the caller by saying:
-"Good morning, good afternoon, or good evening depending on time, and say: you've reached ${companyName}. How can I help today?"
+      When the call starts, immediately greet the caller by saying:
+      "Good morning, afternoon, or evening depending on time, and say: you've reached ${companyName}. How can I help today?"
 
-Use the knowledge base below to answer questions.
+      Use the knowledge base below to answer questions.
 
-KNOWLEDGE BASE:
-${knowledgeText}
+      KNOWLEDGE BASE:
+      ${knowledgeText}
 
-Rules:
-- Use this knowledge when relevant
-- If unsure, say you don't know
-- Keep answers short and clear
-`;
+      ---
+
+      IMPORTANT TASK:
+
+      You must collect answers to ALL of the following questions before ending the call:
+
+      ${questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}
+
+      ---
+
+      RULES:
+
+      - Ask ONE question at a time
+      - Wait for the user's response before asking the next
+      - Do NOT skip questions
+      - Do NOT ask multiple questions at once
+      - Keep track of which questions are answered
+      - If user asks something, answer it first using knowledge base, then continue questions
+      - Do NOT end the conversation until ALL questions are answered
+      - After all questions are complete, thank the user and end politely
+      - Keep responses short and natural
+      `;
 
     /* =========================
        CREATE SESSION
