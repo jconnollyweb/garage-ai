@@ -12,6 +12,7 @@ app.use(express.json());
 let callStartTime = null;
 let currentConfig = null;
 let callStartISO = null;
+let currentQuestions = [];
 
 function cleanTranscript(text = "") {
   return text
@@ -29,7 +30,9 @@ async function logCallStart({ tenant_id, phone_number_id }) {
 
   // set start times properly
   callStartTime = Date.now();
-  callStartISO = new Date().toISOString();
+  callStartISO = new Date().toLocaleString("sv-SE", {
+  timeZone: "Europe/London"
+}).replace(" ", "T");
 
   console.log("🆔 CREATED CALL ID:", callId);
   console.log("🕐 STARTED AT:", callStartISO);
@@ -160,17 +163,74 @@ ${conversation}
   }
 }
 
+async function extractFields(conversation, questions) {
+  try {
+    const res = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        text: { format: { type: "json_object" } },
+        input: `
+You are extracting answers from a phone call.
+
+Match user answers to the questions below.
+
+Return ONLY JSON:
+
+{
+  "question": "answer or null"
+}
+
+Rules:
+- Keys MUST match the questions EXACTLY
+- Use null if no answer found
+- Do NOT guess
+- Only use USER responses
+
+Questions:
+${questions.map(q => `- ${q}`).join("\n")}
+
+Conversation:
+${conversation}
+        `,
+      }),
+    });
+
+    const data = await res.json();
+
+    const textItem = data.output?.[0]?.content?.find(
+      (c) => c.type === "output_text"
+    );
+
+    if (!textItem?.text) return {};
+
+    return JSON.parse(textItem.text);
+
+  } catch (err) {
+    console.error("❌ FIELD EXTRACTION ERROR:", err.message);
+    return {};
+  }
+}
+
 /* =========================
    CALL END
 ========================= */
 async function logCallEnd(callId, conversation) {
   const duration = Math.floor((Date.now() - callStartTime) / 1000);
 
-  const endedAt = new Date().toISOString(); 
+  const endedAt = new Date().toLocaleString("sv-SE", {
+  timeZone: "Europe/London"
+}).replace(" ", "T");
 
   console.log("🆔 UPDATING CALL ID:", callId);
 
   const ai = await generateSummary(conversation);
+  const fields = await extractFields(conversation, currentQuestions); 
+console.log("📦 EXTRACTED FIELDS:", fields);
   
 
 // fallback safety 
@@ -193,6 +253,7 @@ const finalSummary =
     outcome: "completed",
     summary: finalSummary,
     transcript: cleanedConversation,
+    collected_fields: fields,
     started_at: callStartISO, 
     ended_at: endedAt,        
   };
@@ -240,7 +301,19 @@ app.get("/session", async (req, res) => {
       }
     );
 
-    const config = await configRes.json();
+    let config = {};
+
+    try {
+      config = await configRes.json();
+    } catch (err) {
+      console.error("❌ CONFIG PARSE ERROR:", err.message);
+    }
+
+    if (!config?.tenant_id || !config?.phone_number_id) {
+      console.error("❌ INVALID CONFIG:", config);
+      return res.status(500).json({ error: "Invalid config" });
+    }
+
     currentConfig = config;
 
     /* START CALL */
@@ -261,9 +334,18 @@ app.get("/session", async (req, res) => {
 
     const knowledgeData = await knowledgeRes.json();
 
-    const knowledgeText = (knowledgeData.data || [])
-      .map(item => `${item.title}: ${item.content}`)
-      .join("\n");
+   let knowledgeText = "";
+
+      if (Array.isArray(knowledgeData?.data)) {
+        knowledgeText = knowledgeData.data
+          .map(item => `${item.title}: ${item.content}`)
+          .join("\n");
+      }
+
+      if (!knowledgeText) {
+        console.warn("⚠️ No knowledge found, using fallback");
+        knowledgeText = "No knowledge available.";
+      }
 
     /* QUESTIONS */
     const questionRes = await fetch(
@@ -276,7 +358,20 @@ app.get("/session", async (req, res) => {
     );
 
     const questionData = await questionRes.json();
-    const questions = (questionData.data || []).map(q => q.question_text);
+    let questions = [];
+
+    if (Array.isArray(questionData?.data)) {
+      questions = questionData.data
+        .map(q => q.question_text)
+        .filter(Boolean);
+    }
+
+    if (questions.length === 0) {
+      console.warn("⚠️ No questions found, using fallback");
+      questions = ["What is your full name?"];
+    }
+
+currentQuestions = questions;
 
     /* GREETING */
     const londonHour = Number(
@@ -301,7 +396,13 @@ if (match && match[1]) {
   companyName = match[1].trim();
 }
 
-    const instructions = `
+if (!Array.isArray(questions) || questions.length === 0) {
+  console.error("❌ QUESTIONS INVALID — ABORTING SESSION");
+  return res.status(500).json({ error: "No questions available" });
+}
+
+    
+const instructions = `
 You are a professional assistant.
 
 Start with:
@@ -309,59 +410,153 @@ Start with:
 
 ${knowledgeText}
 
-Ask questions one at a time:
+------------------------
+BOOKING SYSTEM RULES
+------------------------
+
+You must follow a strict structured booking flow.
+
+You are collecting answers to THESE questions ONLY:
 ${questions.join("\n")}
 
-IMPORTANT FLOW:
+RULES:
 
-1. First, answer the user's question naturally
-2. Then transition smoothly into booking if relevant
-3. Only ask for details AFTER the user agrees to proceed
+1. ONLY ask questions from the list above
+- Do NOT invent new questions
+- Do NOT rephrase them unnecessarily
 
-BOOKING FLOW:
-- Ask ONE question at a time
-- Wait for response
-- Be conversational, not robotic
+2. ASK ONE QUESTION AT A TIME
+- Wait for the user's response before continuing
 
-DO NOT:
-- Jump straight into all questions
-- Ask questions if user is only enquiring
+3. DO NOT REPEAT QUESTIONS
+- If the user has already answered a question, NEVER ask it again
+- Only ask again if the answer is clearly invalid
+
+4. DO NOT CONFIRM MULTIPLE TIMES
+- Only confirm a value ONCE if needed
+- If user confirms, move on immediately
+
+5. VALIDATION RULES
+
+- Full Name must include first and last name
+- Phone must be a valid UK number (07, 01, 02 and 10–11 digits)
+- Appointment time must be valid and within opening hours
+
+If invalid:
+→ Ask ONCE to repeat
+→ If user insists, accept it and move on
+
+6. OPTIONAL QUESTIONS
+- Ask optional questions ONLY ONCE
+- If user says "no", NEVER ask again
+
+7. STOP CONDITION (VERY IMPORTANT)
+
+When ALL required questions are answered:
+
+→ STOP asking questions
+→ DO NOT loop
+→ DO NOT ask anything else
+
+Then say:
+
+"Perfect, you're booked in. Thank you."
+
+8. BE NATURAL BUT CONTROLLED
+- Short responses
+- No over-talking
+- No repeated confirmations
+
+------------------------
+FLOW
+------------------------
+
+1. Answer user enquiry
+2. Ask to proceed with booking
+3. Collect missing fields (one at a time)
+4. Validate if needed
+5. Stop when complete
 `;
 
     /* SESSION */
-    const response = await fetch(
-      "https://api.openai.com/v1/realtime/sessions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "gpt-realtime-mini",
-          voice: "marin",
-          instructions,
-          input_audio_transcription: {
-            model: "gpt-4o-mini-transcribe",
-          },
-        }),
-      }
-    );
+  /* =========================
+   OPENAI SESSION (ROBUST)
+========================= */
+const response = await fetch(
+  "https://api.openai.com/v1/realtime/sessions",
+  {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "gpt-realtime-mini",
+      voice: "marin",
+      instructions,
+      input_audio_transcription: {
+        model: "gpt-4o-mini-transcribe",
+      },
+    }),
+  }
+);
 
-    const data = await response.json();
+/* =========================
+   READ RAW RESPONSE
+========================= */
+const raw = await response.text();
 
-    console.log("RAW OPENAI RESPONSE:", JSON.stringify(data, null, 2));
+/* =========================
+   CHECK FOR API FAILURE
+========================= */
+if (!response.ok) {
+  console.error("❌ OPENAI SESSION ERROR:", raw);
+  return res.status(500).json({
+    error: "OpenAI session failed",
+    details: raw,
+  });
+}
 
-    res.json({
-      ...data,
-      callId, // SEND TO FRONTEND
-    });
+/* =========================
+   SAFE PARSE
+========================= */
+let data;
 
+try {
+  data = JSON.parse(raw);
+} catch (err) {
+  console.error("❌ OPENAI PARSE ERROR:", err.message);
+  return res.status(500).json({
+    error: "Invalid OpenAI response",
+  });
+}
+
+console.log("RAW OPENAI RESPONSE:", JSON.stringify(data, null, 2));
+
+/* =========================
+   FINAL SAFETY CHECK
+========================= */
+if (!data?.client_secret?.value) {
+  console.error("❌ MISSING CLIENT SECRET:", data);
+  return res.status(500).json({
+    error: "Invalid session response",
+  });
+}
+
+/* =========================
+   SEND TO FRONTEND
+========================= */
+return res.json({
+  ...data,
+  callId,
+});
   } catch (err) {
-    console.error("SESSION ERROR:", err.message);
-    res.status(500).json({ error: "Session failed" });
+    console.error("❌ SESSION ERROR:", err);
+    return res.status(500).json({ error: "Session failed" });
   }
 });
+
+
 
 /* =========================
    CALL END
