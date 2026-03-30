@@ -1,7 +1,8 @@
 import { useState, useRef } from "react";
 
-const ACTIVE_NUMBER = "+441234560099";
-//const ACTIVE_NUMBER = "+441234560001";
+//const ACTIVE_NUMBER = "+441234560099";
+//const ACTIVE_NUMBER = "+441234560001";  
+const ACTIVE_NUMBER = "+441234560085";
 
 let conversation = [];
 
@@ -43,32 +44,55 @@ function App() {
       }));
     };
 
-    dc.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      console.log("📩 EVENT:", msg.type);
+dc.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  console.log("📩 EVENT:", msg.type);
 
-      if (msg.type === "response.output_text.delta") {
-        currentAiMessage += msg.delta;
-      }
+  /* =========================
+     AI TEXT (keep for safety)
+  ========================= */
+  if (msg.type === "response.output_text.delta") {
+    currentAiMessage += msg.delta;
+  }
 
-      if (msg.type === "response.output_text.done") {
-        if (currentAiMessage.trim()) {
-          conversation.push(`AI: ${currentAiMessage.trim()}`);
-          currentAiMessage = "";
-        }
-      }
+  if (msg.type === "response.output_text.done") {
+    if (currentAiMessage.trim()) {
+      conversation.push(`Assistant: ${currentAiMessage.trim()}`);
+      currentAiMessage = "";
+    }
+  }
 
-      if (msg.type === "conversation.item.input_audio_transcription.completed") {
-        const text = msg.transcript;
-        if (text?.trim()) {
-          conversation.push(`User: ${text.trim()}`);
-        }
-      }
+  /* =========================
+     ✅ AI VOICE (THIS WAS MISSING)
+  ========================= */
+  if (msg.type === "response.audio_transcript.done") {
+    console.log("🧠 AI SAID:", msg.transcript);
 
-      if (conversation.length > 0) {
-        console.log("📊 CURRENT CONVERSATION:", conversation);
-      }
-    };
+    const text = msg.transcript;
+
+    if (text && text.trim()) {
+      conversation.push(`Assistant: ${text.trim()}`);
+    }
+  }
+
+  /* =========================
+     USER SPEECH
+  ========================= */
+  if (msg.type === "conversation.item.input_audio_transcription.completed") {
+    const text = msg.transcript;
+
+    if (text && text.trim()) {
+      conversation.push(`User: ${text.trim()}`);
+    }
+  }
+
+  /* =========================
+     DEBUG
+  ========================= */
+  if (conversation.length > 0) {
+    console.log("📊 CURRENT CONVERSATION:", conversation);
+  }
+};
 
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     streamRef.current = stream;
@@ -97,9 +121,19 @@ function App() {
       }
     );
 
+    const sdpText = await sdpResponse.text();
+
+    /* =========================
+      🚨 SAFETY CHECK
+    ========================= */
+    if (!sdpText.startsWith("v=")) {
+      console.error("❌ INVALID SDP FROM OPENAI:", sdpText);
+      return;
+    }
+
     const answer = {
       type: "answer",
-      sdp: await sdpResponse.text(),
+      sdp: sdpText,
     };
 
     await pc.setRemoteDescription(answer);
@@ -108,29 +142,36 @@ function App() {
   }
 
   async function stopSession() {
-    console.log("🛑 STOPPING SESSION");
+  console.log("🛑 STOPPING SESSION");
 
-    const transcript = conversation.join("\n");
+  const transcript = conversation.join("\n");
 
-    console.log("📞 FINAL CONVERSATION:\n", transcript);
-    console.log("🆔 SENDING CALL ID:", callId);
+  console.log("📞 FINAL CONVERSATION:\n", transcript);
+  console.log("🆔 SENDING CALL ID:", callId);
 
-    await fetch("http://localhost:3001/call-end", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        conversation: transcript,
-        callId: callId, 
-      }),
-    });
-
-    if (pcRef.current) pcRef.current.close();
-    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
-
-    setStarted(false);
+  // ✅ CLOSE EVERYTHING FIRST (instant UI response)
+  if (pcRef.current) pcRef.current.close();
+  if (streamRef.current) {
+    streamRef.current.getTracks().forEach(t => t.stop());
   }
+
+  setStarted(false);
+
+  // ✅ SEND TO BACKEND IN BACKGROUND (do NOT await)
+  fetch("http://localhost:3001/call-end", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      conversation: transcript,
+      callId: callId,
+    }),
+    keepalive: true,
+  })
+  .then(() => console.log("✅ Call log sent"))
+  .catch(err => console.error("❌ Call log failed:", err));
+}
 
   return (
     <div style={{ padding: 40 }}>
