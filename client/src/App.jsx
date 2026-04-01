@@ -1,8 +1,8 @@
 import { useState, useRef } from "react";
 
-//const ACTIVE_NUMBER = "+441234560099";
-//const ACTIVE_NUMBER = "+441234560001";  
-const ACTIVE_NUMBER = "+441234560085";
+//const ACTIVE_NUMBER = "+441234560099";   //GARAGE
+//const ACTIVE_NUMBER = "+441234560001";  //ACME
+const ACTIVE_NUMBER = "+441234560085";    //HAIR
 
 let conversation = [];
 
